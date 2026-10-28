@@ -27,10 +27,9 @@ export const types = {
     type: 'integer',
     description: (
       <span>
-        A currency amount is an integer representing the value without any
-        decimal places. Usually it's <code>value * 100</code>, but it depends on
-        your currency. For example, a USD amount of <code>$120.30</code> would
-        be <code>12030</code>.
+        A currency amount is an integer: the value multiplied by 100, whatever
+        the currency. For example, <code>$120.30</code> is <code>12030</code>{' '}
+        and <code>¥1,500</code> is <code>150000</code>.
       </span>
     ),
   },
@@ -171,6 +170,21 @@ export const objects = {
         </span>
       ),
     },
+    {
+      name: 'account_group_id',
+      type: 'id | null',
+      description: (
+        <span>
+          The <a href="#account-group">account group</a> this account belongs
+          to. Defaults to <code>null</code>
+        </span>
+      ),
+    },
+  ],
+
+  accountGroup: [
+    { name: 'id', type: types.id },
+    { name: 'name', type: 'string', required: true },
   ],
 
   category: [
@@ -434,33 +448,6 @@ export const objects = {
 
   rule: [
     { name: 'id', type: types.id },
-    {
-      name: 'stage',
-      type: 'string',
-      required: true,
-      description: (
-        <span>
-          Must be one of <code>pre</code>, <code>default</code>, or{' '}
-          <code>post</code>.
-        </span>
-      ),
-    },
-    {
-      name: 'conditionsOp',
-      type: 'string',
-      description: (
-        <span>
-          Must be one of <code>and</code> or <code>or</code>.
-        </span>
-      ),
-    },
-    { name: 'conditions', type: 'ConditionOrAction[]' },
-    { name: 'actions', type: 'ConditionOrAction[]' },
-  ],
-
-  payeeRule: [
-    { name: 'id', type: types.id },
-    { name: 'payee_id', type: types.id, required: true },
     {
       name: 'stage',
       type: 'string',

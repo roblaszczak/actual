@@ -6,6 +6,7 @@ import { AlignedText } from '@actual-app/components/aligned-text';
 import { Block } from '@actual-app/components/block';
 import { Button } from '@actual-app/components/button';
 import { useResponsive } from '@actual-app/components/hooks/useResponsive';
+import { ModeButton } from '@actual-app/components/mode-button';
 import { Paragraph } from '@actual-app/components/paragraph';
 import { Select } from '@actual-app/components/select';
 import { SpaceBetween } from '@actual-app/components/space-between';
@@ -31,7 +32,6 @@ import { PrivacyFilter } from '#components/PrivacyFilter';
 import { SpendingGraph } from '#components/reports/graphs/SpendingGraph';
 import { LegendItem } from '#components/reports/LegendItem';
 import { LoadingIndicator } from '#components/reports/LoadingIndicator';
-import { ModeButton } from '#components/reports/ModeButton';
 import { calculateSpendingReportTimeRange } from '#components/reports/reportRanges';
 import {
   getSpendingAverageRangeLabel,
@@ -246,6 +246,28 @@ function SpendingInternal({ widget }: SpendingInternalProps) {
     }
   };
 
+  // Picking a month pins the report, as it does in the other reports. The "to"
+  // select stays live: its offset from `compare` is what slides.
+  const onCompareChange = (value: string) => {
+    setCompare(value);
+    setIsLive(false);
+  };
+
+  const onToggleIsLive = () => {
+    const nextIsLive = !isLive;
+    if (nextIsLive) {
+      const [liveCompare, liveCompareTo] = calculateSpendingReportTimeRange({
+        compare,
+        compareTo,
+        isLive: true,
+        mode: reportMode,
+      });
+      setCompare(liveCompare);
+      setCompareTo(liveCompareTo);
+    }
+    setIsLive(nextIsLive);
+  };
+
   const title = widget?.meta?.name || t('Monthly Spending');
   const onSaveWidgetName = async (newName: string) => {
     if (!widget) {
@@ -304,7 +326,7 @@ function SpendingInternal({ widget }: SpendingInternalProps) {
           <SpaceBetween gap={0}>
             <Button
               variant={isLive ? 'primary' : 'normal'}
-              onPress={() => setIsLive(state => !state)}
+              onPress={onToggleIsLive}
             >
               {isLive ? t('Live') : t('Static')}
             </Button>
@@ -325,7 +347,7 @@ function SpendingInternal({ widget }: SpendingInternalProps) {
               </Text>
               <Select
                 value={compare}
-                onChange={setCompare}
+                onChange={onCompareChange}
                 options={allIntervals.map(
                   ({ name, pretty }) => [name, pretty] as const,
                 )}

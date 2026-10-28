@@ -45,6 +45,7 @@ export function isWidgetType(
     'sankey-card',
     'balance-forecast-card',
     'age-of-money-card',
+    'monte-carlo-card',
   ].includes(type);
 }
 
@@ -151,12 +152,14 @@ async function updateDashboard(
     (dbWidgets as DashboardWidgetEntity[]).map(widget => [widget.id, widget]),
   );
 
-  await Promise.all(
-    widgets
-      // Perform an update query only if the widget actually has changes
-      .filter(widget => !isMatch(dbWidgetMap.get(widget.id) ?? {}, widget))
-      .map(widget => db.update('dashboard', widget)),
-  );
+  await batchMessages(async () => {
+    await Promise.all(
+      widgets
+        // Perform an update query only if the widget actually has changes
+        .filter(widget => !isMatch(dbWidgetMap.get(widget.id) ?? {}, widget))
+        .map(widget => db.updateWithSchema('dashboard', widget)),
+    );
+  });
 }
 
 async function updateDashboardWidget(

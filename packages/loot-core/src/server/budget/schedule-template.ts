@@ -4,7 +4,6 @@ import * as db from '#server/db';
 import { collectFormulasFromActions } from '#server/rules/balanceOfFormula';
 import { getRuleForSchedule } from '#server/schedules/app';
 import { prefetchBalanceOfForTransaction } from '#server/transactions/transaction-rules';
-import type { Currency } from '#shared/currencies';
 import * as monthUtils from '#shared/months';
 import {
   extractScheduleConds,
@@ -34,7 +33,6 @@ async function createScheduleList(
   templates: ScheduleTemplate[],
   current_month: string,
   category: CategoryEntity,
-  currency: Currency,
 ) {
   const t: Array<ScheduleTemplateTarget> = [];
   const errors: string[] = [];
@@ -74,8 +72,7 @@ async function createScheduleList(
         }
         case 'fixed': {
           const sign = scheduleAmount < 0 ? -1 : 1;
-          scheduleAmount +=
-            sign * amountToInteger(template.adjustment, currency.decimalPlaces);
+          scheduleAmount += sign * amountToInteger(template.adjustment);
           break;
         }
 
@@ -321,7 +318,6 @@ export async function runSchedule(
   to_budget: number,
   errors: string[],
   category: CategoryEntity,
-  currency: Currency,
 ) {
   const scheduleTemplates = template_lines.filter(t => t.type === 'schedule');
 
@@ -329,7 +325,6 @@ export async function runSchedule(
     scheduleTemplates,
     current_month,
     category,
-    currency,
   );
   errors = errors.concat(t.errors);
 
@@ -342,8 +337,18 @@ export async function runSchedule(
     (c.target_frequency === 'daily' && c.target_interval <= 31) ||
     isTrackingBudget();
 
-  const isSubMonthly = c =>
-    c.target_frequency === 'weekly' || c.target_frequency === 'daily';
+  // A schedule only behaves "sub-monthly" when it recurs more often than
+  // monthly — the same weekly/daily caps `isPayMonthOf` uses. A "repeat every
+  // 360 days" schedule is daily in shape but yearly in effect: letting it
+  // count here wrongly switches the category to the steady-accrual shortcut,
+  // which ignores both the deadline and what has already been saved (#6644).
+  function isSubMonthly(schedule: ScheduleTemplateTarget) {
+    return (
+      (schedule.target_frequency === 'weekly' &&
+        schedule.target_interval <= 4) ||
+      (schedule.target_frequency === 'daily' && schedule.target_interval <= 31)
+    );
+  }
 
   const t_payMonthOf = t.t.filter(isPayMonthOf);
   const t_sinking = t.t

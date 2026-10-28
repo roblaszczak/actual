@@ -1,5 +1,6 @@
 import { vi } from 'vitest';
 
+import { logger } from '#platform/server/log';
 import * as aql from '#server/aql';
 import * as db from '#server/db';
 import type { DbCategory } from '#server/db';
@@ -11,6 +12,7 @@ import {
   applyMultipleCategoryTemplates,
   applyTemplate,
   dryRunCategoryTemplate,
+  storeTemplates,
 } from './goal-template';
 import * as statements from './statements';
 
@@ -25,6 +27,7 @@ vi.mock('./actions', () => ({
 vi.mock('#server/db', () => ({
   getCategories: vi.fn(),
   first: vi.fn(),
+  updateWithSchema: vi.fn(),
 }));
 
 vi.mock('#server/aql', () => ({
@@ -216,7 +219,12 @@ describe('dryRunCategoryTemplate', () => {
       categoryId: 'missing',
       templates,
     });
-    expect(result).toEqual({ budgeted: 0, perTemplate: [0] });
+    expect(result).toEqual({
+      budgeted: 0,
+      perTemplate: [0],
+      goal: null,
+      longGoal: false,
+    });
   });
 
   it('shows full demand even when To Budget cannot cover it', async () => {
@@ -252,6 +260,117 @@ describe('dryRunCategoryTemplate', () => {
     });
     expect(result.budgeted).toBe(500000);
     expect(result.perTemplate).toEqual([180000, 320000]);
+  });
+});
+
+describe('storeTemplates with a month', () => {
+  const monthly: Template = {
+    type: 'periodic',
+    amount: 100,
+    period: { period: 'month', amount: 1 },
+    starting: '2024-01-01',
+    directive: 'template',
+    priority: 1,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(statements.getActiveSchedules).mockResolvedValue([]);
+    vi.mocked(db.getCategories).mockResolvedValue([]);
+    setupAqlForCategoryLookup(category);
+  });
+
+  it('records the goal without changing what is budgeted', async () => {
+    setupSheetMock({ 'to-budget': 100000, [`budget-${category.id}`]: 3000 });
+
+    await storeTemplates({
+      categoriesWithTemplates: [{ id: category.id, templates: [monthly] }],
+      source: 'ui',
+      month: '2024-01',
+    });
+
+    expect(db.updateWithSchema).toHaveBeenCalledWith(
+      'categories',
+      expect.objectContaining({ id: category.id }),
+    );
+    expect(actions.setGoal).toHaveBeenCalledWith({
+      month: '2024-01',
+      category: category.id,
+      goal: 10000,
+      long_goal: null,
+    });
+    expect(actions.setBudget).not.toHaveBeenCalled();
+  });
+
+  it('records a long-term goal', async () => {
+    setupSheetMock({ 'to-budget': 100000 });
+
+    await storeTemplates({
+      categoriesWithTemplates: [
+        {
+          id: category.id,
+          templates: [{ type: 'goal', amount: 1500, directive: 'goal' }],
+        },
+      ],
+      source: 'ui',
+      month: '2024-01',
+    });
+
+    expect(actions.setGoal).toHaveBeenCalledWith({
+      month: '2024-01',
+      category: category.id,
+      goal: 150000,
+      long_goal: 1,
+    });
+  });
+
+  it('clears the goal when every automation is removed', async () => {
+    setupSheetMock({});
+
+    await storeTemplates({
+      categoriesWithTemplates: [{ id: category.id, templates: [] }],
+      source: 'ui',
+      month: '2024-01',
+    });
+
+    expect(actions.setGoal).toHaveBeenCalledWith({
+      month: '2024-01',
+      category: category.id,
+      goal: null,
+      long_goal: null,
+    });
+  });
+
+  it('clears the goal instead of failing the save when it cannot be worked out', async () => {
+    vi.mocked(actions.getSheetValue).mockRejectedValue(new Error('no sheet'));
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    await storeTemplates({
+      categoriesWithTemplates: [{ id: category.id, templates: [monthly] }],
+      source: 'ui',
+      month: '2024-01',
+    });
+
+    expect(db.updateWithSchema).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+    expect(actions.setGoal).toHaveBeenCalledWith({
+      month: '2024-01',
+      category: category.id,
+      goal: null,
+      long_goal: null,
+    });
+  });
+
+  it('leaves goals alone without a month', async () => {
+    setupSheetMock({ 'to-budget': 100000 });
+
+    await storeTemplates({
+      categoriesWithTemplates: [{ id: category.id, templates: [monthly] }],
+      source: 'notes',
+    });
+
+    expect(db.updateWithSchema).toHaveBeenCalled();
+    expect(actions.setGoal).not.toHaveBeenCalled();
   });
 });
 
@@ -337,7 +456,8 @@ describe('applyMultipleCategoryTemplates', () => {
       categoryIds: [cat1.id, cat2.id],
     });
 
-    expect(result.message).toMatch(/Successfully applied/);
+    expect(result.message).toBe('templates-applied');
+    expect(result.count).toBe(2);
     expect(actions.setBudget).toHaveBeenCalledTimes(2);
     const budgetCalls = vi
       .mocked(actions.setBudget)
@@ -414,7 +534,7 @@ describe('applyMultipleCategoryTemplates', () => {
       categoryIds: [cat1.id],
     });
 
-    expect(result.message).toMatch(/There were errors/);
+    expect(result.message).toBe('template-errors');
     expect(result.pre).toMatch(/Target month has passed/);
     expect(actions.setBudget).not.toHaveBeenCalled();
   });
@@ -434,7 +554,7 @@ describe('applyMultipleCategoryTemplates', () => {
       categoryIds: [cat1.id],
     });
 
-    expect(result.message).toBe('Everything is up to date');
+    expect(result.message).toBe('templates-up-to-date');
     const goalCalls = vi.mocked(actions.setGoal).mock.calls.map(c => c[0]);
     expect(goalCalls).toContainEqual(
       expect.objectContaining({ category: cat1.id, goal: null }),
@@ -480,6 +600,140 @@ describe('applyMultipleCategoryTemplates', () => {
     expect(cat1Amount).toBe(15000);
     expect(cat2Amount).toBe(5000);
     expect(cat1Amount + cat2Amount).toBe(20000);
+  });
+});
+
+describe('tracking budget priority handling (issue #8422)', () => {
+  const cat1: CategoryEntity = {
+    id: 'cat-1',
+    name: 'Groceries',
+    group: 'g1',
+    is_income: false,
+  };
+  const cat2: CategoryEntity = {
+    id: 'cat-2',
+    name: 'Rent',
+    group: 'g1',
+    is_income: false,
+  };
+
+  function setupAqlMultiCategory(
+    cats: CategoryEntity[],
+    templatesById: Record<string, Template[]>,
+  ) {
+    vi.mocked(aql.aqlQuery).mockImplementation(async (query: unknown) => {
+      const queryStr = JSON.stringify(query);
+      if (queryStr.includes('hideFraction')) {
+        return { data: [{ value: 'false' }], dependencies: [] };
+      }
+      if (queryStr.includes('defaultCurrencyCode')) {
+        return { data: [{ value: 'USD' }], dependencies: [] };
+      }
+      if (queryStr.includes('goal_def')) {
+        return {
+          data: cats
+            .filter(c => templatesById[c.id])
+            .map(c => ({
+              ...c,
+              goal_def: JSON.stringify(templatesById[c.id]),
+            })),
+          dependencies: [],
+        };
+      }
+      if (queryStr.includes('categories')) {
+        return { data: cats, dependencies: [] };
+      }
+      return { data: [], dependencies: [] };
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(statements.getActiveSchedules).mockResolvedValue(
+      [] as Awaited<ReturnType<typeof statements.getActiveSchedules>>,
+    );
+    vi.mocked(db.getCategories).mockResolvedValue([] as DbCategory[]);
+  });
+
+  it('funds a priority>0 template from total-saved since tracking budgets have no to-budget cell', async () => {
+    // Regression test for #8422: `to-budget` is 0 (it doesn't exist for
+    // tracking budgets), but `total-saved` reflects real budgeted income,
+    // so the priority>0 template should still get funded instead of
+    // clamping to 0.
+    setupSheetMock({ 'to-budget': 0, 'total-saved': 100000 });
+    vi.mocked(actions.isTrackingBudget).mockReturnValue(true);
+    setupAqlMultiCategory([cat1], {
+      [cat1.id]: [
+        {
+          type: 'periodic',
+          amount: 100,
+          period: { period: 'month', amount: 1 },
+          starting: '2024-01-01',
+          directive: 'template',
+          priority: 1,
+        },
+      ],
+    });
+
+    const result = await applyMultipleCategoryTemplates({
+      month: '2024-01',
+      categoryIds: [cat1.id],
+    });
+
+    expect(result.message).toBe('templates-applied');
+    const budgetCalls = vi
+      .mocked(actions.setBudget)
+      .mock.calls.map(call => call[0]);
+    expect(budgetCalls.find(c => c.category === cat1.id)?.amount).toBe(10000);
+  });
+
+  it('clamps lower-priority categories proportionally once total-saved runs out', async () => {
+    // Same shape as the envelope-budget "funds run out" test, but backed by
+    // total-saved: priority is still meaningful in tracking budgets, it's
+    // just not the identical no-clamp behavior of skipping the check
+    // entirely.
+    setupSheetMock({ 'to-budget': 0, 'total-saved': 15000 });
+    vi.mocked(actions.isTrackingBudget).mockReturnValue(true);
+    setupAqlMultiCategory([cat1, cat2], {
+      [cat1.id]: [
+        {
+          type: 'periodic',
+          amount: 100,
+          period: { period: 'month', amount: 1 },
+          starting: '2024-01-01',
+          directive: 'template',
+          priority: 1,
+        },
+      ],
+      [cat2.id]: [
+        {
+          type: 'periodic',
+          amount: 100,
+          period: { period: 'month', amount: 1 },
+          starting: '2024-01-01',
+          directive: 'template',
+          priority: 2,
+        },
+      ],
+    });
+
+    await applyMultipleCategoryTemplates({
+      month: '2024-01',
+      categoryIds: [cat1.id, cat2.id],
+    });
+
+    const budgetCalls = vi
+      .mocked(actions.setBudget)
+      .mock.calls.map(call => call[0]);
+    const cat1Amount = Number(
+      budgetCalls.find(c => c.category === cat1.id)?.amount ?? 0,
+    );
+    const cat2Amount = Number(
+      budgetCalls.find(c => c.category === cat2.id)?.amount ?? 0,
+    );
+    expect(cat1Amount).toBe(10000);
+    expect(cat2Amount).toBe(5000);
+    expect(cat1Amount + cat2Amount).toBe(15000);
   });
 });
 

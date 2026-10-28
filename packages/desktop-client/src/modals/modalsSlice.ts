@@ -3,6 +3,7 @@ import type { IntegerAmount } from '@actual-app/core/shared/util';
 import type { File } from '@actual-app/core/types/file';
 import type {
   AccountEntity,
+  BankSyncCredentialSource,
   CategoryEntity,
   CategoryGroupEntity,
   GoCardlessToken,
@@ -24,6 +25,7 @@ import type { PayloadAction } from '@reduxjs/toolkit';
 import { accountQueries } from '#accounts';
 import { resetApp, setAppState } from '#app/appSlice';
 import type { SelectLinkedAccountsModalProps } from '#components/modals/SelectLinkedAccountsModal';
+import type { TransactionTableColumn } from '#components/transactions/table/columns';
 import { createAppAsyncThunk } from '#redux';
 import { signOut } from '#users/usersSlice';
 
@@ -56,6 +58,12 @@ export type Modal =
     }
   | {
       name: 'add-local-account';
+    }
+  | {
+      name: 'account-groups';
+      options: {
+        accountId: AccountEntity['id'];
+      };
     }
   | {
       name: 'close-account';
@@ -120,13 +128,15 @@ export type Modal =
   | {
       name: 'simplefin-init';
       options: {
-        onSuccess: () => void;
+        onSuccess: (perBudgetFile: boolean) => void;
+        credentialSource: BankSyncCredentialSource;
       };
     }
   | {
       name: 'pluggyai-init';
       options: {
-        onSuccess: () => void;
+        onSuccess: (perBudgetFile: boolean) => void;
+        credentialSource: BankSyncCredentialSource;
       };
     }
   | {
@@ -307,7 +317,8 @@ export type Modal =
   | {
       name: 'payee-autocomplete';
       options: {
-        onSelect: (payeeId: string) => void;
+        onSelect: (payeeId: string | null) => void;
+        showNoneOption?: boolean;
         onClose?: () => void;
       };
     }
@@ -353,8 +364,20 @@ export type Modal =
         onReopenAccount: (accountId: AccountEntity['id']) => void;
         onEditNotes: (id: NoteEntity['id']) => void;
         onClose?: () => void;
-        onToggleRunningBalance?: () => void;
-        onToggleReconciled?: () => void;
+        onReconcile?: () => void;
+      };
+    }
+  | {
+      name: 'all-accounts-menu';
+      options: {
+        onClose?: () => void;
+      };
+    }
+  | {
+      name: 'account-reconcile';
+      options: {
+        accountId: AccountEntity['id'];
+        onReconcile: (amount: number) => void;
       };
     }
   | {
@@ -363,8 +386,10 @@ export type Modal =
         categoryId: CategoryEntity['id'];
         onSave: (category: CategoryEntity) => void;
         onEditNotes: (id: NoteEntity['id']) => void;
-        onDelete: (categoryId: CategoryEntity['id']) => void;
-        onToggleVisibility: (categoryId: CategoryEntity['id']) => void;
+        onDelete: (
+          categoryId: CategoryEntity['id'],
+          transferCategoryId?: CategoryEntity['id'],
+        ) => void;
         onEditAutomations?: (categoryId: CategoryEntity['id']) => void;
         onClose?: () => void;
       };
@@ -404,8 +429,10 @@ export type Modal =
           isIncome: CategoryGroupEntity['is_income'],
         ) => void;
         onEditNotes: (id: NoteEntity['id']) => void;
-        onDelete: (groupId: CategoryGroupEntity['id']) => void;
-        onToggleVisibility: (groupId: CategoryGroupEntity['id']) => void;
+        onDelete: (
+          groupId: CategoryGroupEntity['id'],
+          transferCategoryId?: CategoryEntity['id'],
+        ) => void;
         onClose?: () => void;
         onApplyBudgetTemplatesInGroup?: (
           categories: Array<CategoryEntity['id']>,
@@ -461,6 +488,7 @@ export type Modal =
         onCarryover?: (carryover: boolean) => void;
         onTransfer?: () => void;
         onCover?: () => void;
+        onFundGoal?: (amount: IntegerAmount) => void;
       };
     }
   | {
@@ -470,17 +498,6 @@ export type Modal =
         month: string;
         onCarryover: (carryover: boolean) => void;
         onShowActivity: () => void;
-      };
-    }
-  | {
-      name: 'envelope-summary-to-budget-menu';
-      options: {
-        month: string;
-        onTransfer: () => void;
-        onCover: () => void;
-        onHoldBuffer: () => void;
-        onResetHoldBuffer: () => void;
-        onBudgetAction: (month: string, action: string, arg?: unknown) => void;
       };
     }
   | {
@@ -571,11 +588,20 @@ export type Modal =
       };
     }
   | {
+      name: 'transaction-table-columns';
+      options: {
+        columns: TransactionTableColumn[];
+        onSave: (
+          columns: TransactionTableColumn[],
+          applyToAll: boolean,
+        ) => void;
+      };
+    }
+  | {
       name: 'convert-to-schedule';
       options: {
         onConfirm: () => void;
         onCancel?: () => void;
-        isBeyondWindow?: boolean;
         daysUntilTransaction?: number;
         upcomingDays?: number;
       };
@@ -719,7 +745,7 @@ type ReplaceModalPayload = {
 };
 
 type CollapseModalPayload = {
-  rootModalName: Modal['name'];
+  rootModalName: string;
 };
 
 const modalsSlice = createSlice({

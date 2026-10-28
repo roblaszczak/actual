@@ -1,10 +1,10 @@
 import * as db from '#server/db';
 import { Rule } from '#server/rules';
 import { getRuleForSchedule } from '#server/schedules/app';
-import type { Currency } from '#shared/currencies';
 import type { CategoryEntity } from '#types/models';
+import type { ScheduleTemplate } from '#types/models/templates';
 
-import { isTrackingBudget } from './actions';
+import { getSheetValue, isTrackingBudget } from './actions';
 import { runSchedule } from './schedule-template';
 
 vi.mock('#server/db');
@@ -16,15 +16,6 @@ vi.mock('#server/schedules/app', async () => {
     getRuleForSchedule: vi.fn(),
   };
 });
-
-const defaultCurrency: Currency = {
-  code: '',
-  symbol: '',
-  name: '',
-  decimalPlaces: 2,
-  numberFormat: 'comma-dot',
-  symbolFirst: false,
-};
 
 const defaultCategory = { id: '1', name: 'Test Category' } as CategoryEntity;
 
@@ -129,7 +120,6 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
 
     expect(result.to_budget).toBe(10000);
@@ -161,7 +151,6 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
 
     expect(result.to_budget).toBe(1000);
@@ -193,7 +182,6 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
 
     expect(result.perScheduleMonthly.get(template_lines[0])).toBe(10000);
@@ -233,7 +221,6 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
 
     expect(result.errors).toHaveLength(0);
@@ -270,7 +257,6 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
     expect(result.to_budget).toBe(0);
     expect(result.perScheduleMonthly.get(template_lines[0])).toBeUndefined();
@@ -311,7 +297,6 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
 
     expect(result.to_budget).toBe(10000);
@@ -345,7 +330,6 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
     expect(result.to_budget).toBe(11000); // $100 × 1.10
   });
@@ -376,7 +360,6 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
     expect(result.to_budget).toBe(10500); // $100 + $5
   });
@@ -404,7 +387,6 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
     expect(result.to_budget).toBe(0);
   });
@@ -433,7 +415,6 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
     expect(result.to_budget).toBe(3100); // 31 days × $1
   });
@@ -475,7 +456,6 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
 
     expect(result.errors).toHaveLength(0);
@@ -517,7 +497,6 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
     expect(result.errors).toContainEqual(
       expect.stringMatching(/Schedule Past is in the Past/),
@@ -553,7 +532,6 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
     expect(result.to_budget).toBe(10000);
   });
@@ -587,7 +565,6 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
     expect(result.to_budget).toBe(6000);
   });
@@ -621,9 +598,46 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
     expect(result.to_budget).toBe(3000);
+  });
+
+  it('keeps meeting the deadline for a schedule repeating every 360 days', async () => {
+    // Every 360 days is daily in shape but yearly in effect, so it sinks:
+    // $500 due 2026-05-15 spread over the five months from January is $100
+    // a month. Once January is funded, February used to drop to $41.67 --
+    // subDays(2026-05-15, 360) lands in May 2025, and that 12-month span
+    // became the divisor. The deadline and the $100 already saved were both
+    // ignored, so the category came up short in May.
+    const template_lines = [
+      {
+        type: 'schedule',
+        name: 'EveryThreeSixtyDays',
+        directive: 'template',
+        priority: 0,
+      } satisfies ScheduleTemplate,
+    ];
+    mockSingleSchedule({
+      start: '2026-05-15',
+      amount: -50000,
+      frequency: 'daily',
+      interval: 360,
+    });
+    // January budgeted $100 and nothing was spent, so it carries forward and
+    // is also last month's goal.
+    vi.mocked(getSheetValue).mockResolvedValue(10000);
+
+    const result = await runSchedule(
+      template_lines,
+      '2026-02-01',
+      10000,
+      0,
+      10000,
+      0,
+      [],
+      defaultCategory,
+    );
+    expect(result.to_budget).toBe(10000);
   });
 
   it('absorbs surplus when last-month balance exceeds a sinking schedule target', async () => {
@@ -652,7 +666,6 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
     expect(result.to_budget).toBe(0);
   });
@@ -685,7 +698,6 @@ describe('runSchedule', () => {
       0,
       [],
       defaultCategory,
-      defaultCurrency,
     );
     expect(result.to_budget).toBe(0);
   });

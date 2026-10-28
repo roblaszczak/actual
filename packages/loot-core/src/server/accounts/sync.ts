@@ -189,6 +189,7 @@ async function downloadGoCardlessTransactions(
 async function downloadSimpleFinTransactions(
   acctId: AccountEntity['id'] | AccountEntity['id'][],
   since: string | string[],
+  fileId?: string,
 ) {
   const userToken = await asyncStorage.getItem('user-token');
   if (!userToken) return;
@@ -207,6 +208,7 @@ async function downloadSimpleFinTransactions(
       },
       {
         'X-ACTUAL-TOKEN': userToken,
+        ...(fileId ? { 'X-Actual-File-Id': fileId } : {}),
       },
       // 5 minute timeout for batch sync, one minute for individual accounts
       Array.isArray(acctId) ? 300000 : 60000,
@@ -278,6 +280,7 @@ async function downloadSimpleFinTransactions(
 async function downloadPluggyAiTransactions(
   acctId: AccountEntity['id'],
   since: string,
+  fileId?: string,
 ) {
   const userToken = await asyncStorage.getItem('user-token');
   if (!userToken) return;
@@ -292,6 +295,7 @@ async function downloadPluggyAiTransactions(
     },
     {
       'X-ACTUAL-TOKEN': userToken,
+      ...(fileId ? { 'X-Actual-File-Id': fileId } : {}),
     },
     60000,
   );
@@ -356,6 +360,7 @@ async function downloadAkahuTransactions(
 async function downloadEnableBankingTransactions(
   acctId: string,
   since: string,
+  aspspName?: string,
 ) {
   const userToken = await asyncStorage.getItem('user-token');
   if (!userToken) return;
@@ -367,6 +372,7 @@ async function downloadEnableBankingTransactions(
     {
       accountId: acctId,
       startDate: since,
+      aspspName,
     },
     {
       'X-ACTUAL-TOKEN': userToken,
@@ -411,10 +417,34 @@ async function resolvePayee(trans, payeeName, payeesToCreate) {
   return trans.payee;
 }
 
+export const PAYEE_NAME_NORMALIZATIONS = ['original', 'title-case'] as const;
+export type PayeeNameNormalization = (typeof PAYEE_NAME_NORMALIZATIONS)[number];
+
+function normalizePayeeName(
+  payeeName: string,
+  normalization: PayeeNameNormalization,
+): string {
+  switch (normalization) {
+    case 'original':
+      return payeeName;
+    case 'title-case':
+      return title(payeeName);
+    default:
+      normalization satisfies never;
+      throw new Error(
+        `Unknown payee name normalization: ${String(normalization)}`,
+      );
+  }
+}
+
 async function normalizeTransactions(
   transactions,
   acctId,
-  { rawPayeeName = false } = {},
+  {
+    payeeNameNormalization = 'title-case',
+  }: {
+    payeeNameNormalization?: PayeeNameNormalization;
+  } = {},
 ) {
   const payeesToCreate = new Map();
 
@@ -452,7 +482,7 @@ async function normalizeTransactions(
       if (trimmed === '') {
         payee_name = null;
       } else {
-        payee_name = rawPayeeName ? trimmed : title(trimmed);
+        payee_name = normalizePayeeName(trimmed, payeeNameNormalization);
       }
     }
 
@@ -582,6 +612,19 @@ async function createNewPayees(payeesToCreate, addsAndUpdates) {
   });
 }
 
+export type MatchTransactionsOptions = {
+  isBankSyncAccount?: boolean;
+  strictIdChecking?: boolean;
+  reimportDeleted?: boolean;
+  payeeNameNormalization?: PayeeNameNormalization;
+};
+
+export type ReconcileTransactionsOptions = MatchTransactionsOptions & {
+  isPreview?: boolean;
+  defaultCleared?: boolean;
+  updateDates?: boolean;
+};
+
 export type ReconcileTransactionsResult = {
   added: string[];
   updated: string[];
@@ -596,12 +639,15 @@ export type ReconcileTransactionsResult = {
 export async function reconcileTransactions(
   acctId,
   transactions,
-  isBankSyncAccount = false,
-  strictIdChecking = true,
-  isPreview = false,
-  defaultCleared = true,
-  updateDates = false,
-  reimportDeleted?: boolean,
+  {
+    isBankSyncAccount = false,
+    strictIdChecking = true,
+    isPreview = false,
+    defaultCleared = true,
+    updateDates = false,
+    reimportDeleted,
+    payeeNameNormalization,
+  }: ReconcileTransactionsOptions = {},
 ): Promise<ReconcileTransactionsResult> {
   logger.log('Performing transaction reconciliation');
 
@@ -615,16 +661,22 @@ export async function reconcileTransactions(
     transactionsStep1,
     transactionsStep2,
     transactionsStep3,
-  } = await matchTransactions(
-    acctId,
-    transactions,
+  } = await matchTransactions(acctId, transactions, {
     isBankSyncAccount,
     strictIdChecking,
     reimportDeleted,
-  );
+    payeeNameNormalization,
+  });
 
   // Finally, generate & commit the changes
   for (const { trans, subtransactions, match } of transactionsStep3) {
+    // A skipped transaction still takes part in the matching above, so the
+    // other transactions match the same way as in the import preview. It is
+    // not imported or merged.
+    if (trans.skipTransaction) {
+      continue;
+    }
+
     if (match && !trans.forceAddTransaction) {
       // Skip updating already reconciled (locked) transactions
       if (match.reconciled) {
@@ -753,12 +805,42 @@ export async function reconcileTransactions(
   };
 }
 
+// Ranks fuzzy-match candidates by distance from transaction date, nearest first.
+// On a same-distance tie, a candidate that already carries its own imported_id
+// (from a previous, unrelated sync) ranks after one that doesn't. Without this
+// tie-break, picking the already-imported one would lead the fuzzy match merge
+// to silently overwrite imported_id/payee/notes with this transaction's data.
+export function compareFuzzyMatchCandidates(
+  transactionDate: string,
+  a: Pick<db.DbViewTransaction, 'date' | 'imported_id'>,
+  b: Pick<db.DbViewTransaction, 'date' | 'imported_id'>,
+): number {
+  const aDistance = Math.abs(
+    dateFns.differenceInMilliseconds(
+      dateFns.parseISO(transactionDate),
+      dateFns.parseISO(db.fromDateRepr(a.date)),
+    ),
+  );
+  const bDistance = Math.abs(
+    dateFns.differenceInMilliseconds(
+      dateFns.parseISO(transactionDate),
+      dateFns.parseISO(db.fromDateRepr(b.date)),
+    ),
+  );
+  const aHasImportedId = Number(a.imported_id != null);
+  const bHasImportedId = Number(b.imported_id != null);
+  return aDistance - bDistance || aHasImportedId - bHasImportedId;
+}
+
 export async function matchTransactions(
   acctId,
   transactions,
-  isBankSyncAccount = false,
-  strictIdChecking = true,
-  reimportDeletedOverride?: boolean,
+  {
+    isBankSyncAccount = false,
+    strictIdChecking = true,
+    reimportDeleted: reimportDeletedOverride,
+    payeeNameNormalization,
+  }: MatchTransactionsOptions = {},
 ) {
   logger.log('Performing transaction reconciliation matching');
 
@@ -772,15 +854,13 @@ export async function matchTransactions(
         ).then(data => String(data?.data?.[0]?.value ?? 'true') === 'true');
 
   const hasMatched = new Set();
+  const exactMatchedParentIds = new Set<db.DbViewTransaction['id']>();
 
-  const transactionNormalization = isBankSyncAccount
-    ? normalizeBankSyncTransactions
-    : normalizeTransactions;
-
-  const { normalized, payeesToCreate } = await transactionNormalization(
-    transactions,
-    acctId,
-  );
+  const { normalized, payeesToCreate } = isBankSyncAccount
+    ? await normalizeBankSyncTransactions(transactions, acctId)
+    : await normalizeTransactions(transactions, acctId, {
+        payeeNameNormalization,
+      });
 
   // The first pass runs the rules, and preps data for fuzzy matching
   const accounts: db.DbAccount[] = await db.getAccounts();
@@ -812,6 +892,10 @@ export async function matchTransactions(
 
       if (match) {
         hasMatched.add(match.id);
+
+        if (isBankSyncAccount && match.is_parent) {
+          exactMatchedParentIds.add(match.id);
+        }
       }
     }
 
@@ -831,6 +915,7 @@ export async function matchTransactions(
             db.DbViewTransaction,
             | 'id'
             | 'is_parent'
+            | 'parent_id'
             | 'date'
             | 'imported_id'
             | 'payee'
@@ -842,7 +927,7 @@ export async function matchTransactions(
             | 'amount'
           >
         >(
-          `SELECT id, is_parent, date, imported_id, payee, imported_payee, category, notes, reconciled, cleared, amount
+          `SELECT id, is_parent, parent_id, date, imported_id, payee, imported_payee, category, notes, reconciled, cleared, amount
           FROM v_transactions
           WHERE
             -- If both ids are set, and we didn't match earlier then skip dedup
@@ -863,6 +948,7 @@ export async function matchTransactions(
             db.DbViewTransaction,
             | 'id'
             | 'is_parent'
+            | 'parent_id'
             | 'date'
             | 'imported_id'
             | 'payee'
@@ -874,7 +960,7 @@ export async function matchTransactions(
             | 'amount'
           >
         >(
-          `SELECT id, is_parent, date, imported_id, payee, imported_payee, category, notes, reconciled, cleared, amount
+          `SELECT id, is_parent, parent_id, date, imported_id, payee, imported_payee, category, notes, reconciled, cleared, amount
           FROM v_transactions
           WHERE date >= ? AND date <= ? AND amount = ? AND account = ?`,
           [sevenDaysBefore, sevenDaysAfter, trans.amount || 0, acctId],
@@ -885,21 +971,9 @@ export async function matchTransactions(
       // transactions date. i.e. if the original transaction is in 21-02-2024 and
       // the matched transactions are: 20-02-2024, 21-02-2024, 29-02-2024 then
       // the resulting data-set should be: 21-02-2024, 20-02-2024, 29-02-2024.
-      fuzzyDataset = fuzzyDataset.sort((a, b) => {
-        const aDistance = Math.abs(
-          dateFns.differenceInMilliseconds(
-            dateFns.parseISO(trans.date),
-            dateFns.parseISO(db.fromDateRepr(a.date)),
-          ),
-        );
-        const bDistance = Math.abs(
-          dateFns.differenceInMilliseconds(
-            dateFns.parseISO(trans.date),
-            dateFns.parseISO(db.fromDateRepr(b.date)),
-          ),
-        );
-        return aDistance > bDistance ? 1 : -1;
-      });
+      fuzzyDataset = fuzzyDataset.sort((a, b) =>
+        compareFuzzyMatchCandidates(trans.date, a, b),
+      );
     }
 
     transactionsStep1.push({
@@ -920,7 +994,10 @@ export async function matchTransactions(
     if (!data.match && data.fuzzyDataset) {
       // Try to find one where the payees match.
       const match = data.fuzzyDataset.find(
-        row => !hasMatched.has(row.id) && data.trans.payee === row.payee,
+        row =>
+          !hasMatched.has(row.id) &&
+          !exactMatchedParentIds.has(row.parent_id) &&
+          data.trans.payee === row.payee,
       );
 
       if (match) {
@@ -937,7 +1014,10 @@ export async function matchTransactions(
   // around the same date with the same amount.
   const transactionsStep3 = transactionsStep2.map(data => {
     if (!data.match && data.fuzzyDataset) {
-      const match = data.fuzzyDataset.find(row => !hasMatched.has(row.id));
+      const match = data.fuzzyDataset.find(
+        row =>
+          !hasMatched.has(row.id) && !exactMatchedParentIds.has(row.parent_id),
+      );
       if (match) {
         hasMatched.add(match.id);
         return { ...data, match };
@@ -966,7 +1046,7 @@ export async function addTransactions(
   const { normalized, payeesToCreate } = await normalizeTransactions(
     transactions,
     acctId,
-    { rawPayeeName: true },
+    { payeeNameNormalization: 'original' },
   );
 
   const accounts: db.DbAccount[] = await db.getAccounts();
@@ -1123,15 +1203,11 @@ async function processBankSyncDownload(
         starting_balance_flag: true,
       });
 
-      const result = await reconcileTransactions(
-        id,
-        transactions,
-        true,
-        useStrictIdChecking,
-        false,
-        true,
+      const result = await reconcileTransactions(id, transactions, {
+        isBankSyncAccount: true,
+        strictIdChecking: useStrictIdChecking,
         updateDates,
-      );
+      });
       return {
         ...result,
         added: [initialId, ...result.added],
@@ -1148,11 +1224,11 @@ async function processBankSyncDownload(
     const result = await reconcileTransactions(
       id,
       importTransactions ? transactions : [],
-      true,
-      useStrictIdChecking,
-      false,
-      true,
-      updateDates,
+      {
+        isBankSyncAccount: true,
+        strictIdChecking: useStrictIdChecking,
+        updateDates,
+      },
     );
 
     if (currentBalance != null) {
@@ -1171,6 +1247,7 @@ export async function syncAccount(
   bankId: string,
   customStartingDate?: string,
   customStartingBalance?: number,
+  fileId?: string,
 ) {
   const acctRow = await db.select('accounts', id);
 
@@ -1181,9 +1258,17 @@ export async function syncAccount(
 
   let download;
   if (acctRow.account_sync_source === 'simpleFin') {
-    download = await downloadSimpleFinTransactions(acctId, syncStartDate);
+    download = await downloadSimpleFinTransactions(
+      acctId,
+      syncStartDate,
+      fileId,
+    );
   } else if (acctRow.account_sync_source === 'pluggyai') {
-    download = await downloadPluggyAiTransactions(acctId, syncStartDate);
+    download = await downloadPluggyAiTransactions(
+      acctId,
+      syncStartDate,
+      fileId,
+    );
   } else if (acctRow.account_sync_source === 'akahu') {
     download = await downloadAkahuTransactions(acctId, syncStartDate);
   } else if (acctRow.account_sync_source === 'goCardless') {
@@ -1196,7 +1281,12 @@ export async function syncAccount(
       newAccount,
     );
   } else if (acctRow.account_sync_source === 'enableBanking') {
-    download = await downloadEnableBankingTransactions(acctId, syncStartDate);
+    const bankRow = await db.select('banks', acctRow.bank);
+    download = await downloadEnableBankingTransactions(
+      acctId,
+      syncStartDate,
+      bankRow?.name,
+    );
   } else {
     throw new Error(
       `Unrecognized bank-sync provider: ${acctRow.account_sync_source}`,
@@ -1215,6 +1305,7 @@ export async function syncAccount(
 
 export async function simpleFinBatchSync(
   accounts: Array<Pick<AccountEntity, 'id' | 'account_id'>>,
+  fileId?: string,
 ) {
   const startDates = await Promise.all(
     accounts.map(async a => getAccountSyncStartDate(a.id)),
@@ -1223,6 +1314,7 @@ export async function simpleFinBatchSync(
   const res = await downloadSimpleFinTransactions(
     accounts.map(a => a.account_id),
     startDates,
+    fileId,
   );
 
   if (!res) {

@@ -69,6 +69,14 @@ bundle.mobile.js.map
 .claude/worktrees/*
 .claude/settings.local.json
 
+# Impeccable skill: payload is installed locally per developer, only the
+# defensive hook wiring and design context files are committed
+.impeccable/config.local.json
+DESIGN.json
+**/skills/impeccable/
+.cursor/agents/impeccable-*.md
+.github/agents/impeccable-*.agent.md
+
 # Misc
 .#*
 
@@ -108,3 +116,6 @@ storybook-static
 .actualrc.yaml
 .actualrc.yml
 actual.config.js
+
+# Mac App Store provisioning profiles, downloaded per machine
+packages/desktop-electron/mas/*.provisionprofile

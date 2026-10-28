@@ -20,7 +20,7 @@ Want to say thanks? Click the ⭐ at the top of the page.
 
 There are four ways to deploy Actual:
 
-1. One-click deployment [via PikaPods](https://www.pikapods.com/pods?run=actual) (~1.40 $/month) - recommended for non-technical users
+1. One-click deployment [via PikaPods](https://www.pikapods.com/pods?run=actual) (~2.00 $/month) - recommended for non-technical users
 1. Managed hosting [via Fly.io](https://actualbudget.org/docs/install/fly) (~1.50 $/month)
 1. Self-hosted by using [a Docker image](https://actualbudget.org/docs/install/docker)
 1. Local-only apps - [downloadable Windows, Mac and Linux apps](https://actualbudget.org/download/) you can run on your device
@@ -71,10 +71,6 @@ Make Actual Budget accessible to more people by helping with the [Internationali
 <a href="https://hosted.weblate.org/engage/actualbudget/">
 <img src="https://hosted.weblate.org/widget/actualbudget/actual/287x66-grey.png" alt="Translation status" />
 </a>
-
-## Repo Activity
-
-![Alt](https://repobeats.axiom.co/api/embed/e20537dd8b74956f86736726ccfbc6f0565bec22.svg 'Repobeats analytics image')
 
 ## Sponsors
 

@@ -170,14 +170,15 @@ function AgeOfMoneyInner({ widget }: AgeOfMoneyInnerProps) {
     }
   }, [latestTransaction, widget?.meta?.timeFrame]);
 
-  const onChangeDates = useCallback(
-    (newStart: string, newEnd: string, newMode: TimeFrame['mode']) => {
-      setStart(newStart);
-      setEnd(newEnd);
-      setMode(newMode);
-    },
-    [],
-  );
+  function onChangeDates(
+    newStart: string,
+    newEnd: string,
+    newMode: TimeFrame['mode'],
+  ) {
+    setStart(newStart);
+    setEnd(newEnd);
+    setMode(newMode);
+  }
 
   const updateDashboardWidgetMutation = useUpdateDashboardWidgetMutation();
 
@@ -285,6 +286,7 @@ function AgeOfMoneyInner({ widget }: AgeOfMoneyInnerProps) {
         earliestTransaction={earliestTransaction}
         latestTransaction={latestTransaction}
         firstDayOfWeekIdx={firstDayOfWeekIdx}
+        granularities={['month', 'day']}
         mode={mode}
         onChangeDates={onChangeDates}
         filters={conditions}
@@ -318,6 +320,7 @@ function AgeOfMoneyInner({ widget }: AgeOfMoneyInnerProps) {
       >
         <View
           style={{
+            alignItems: 'flex-end',
             textAlign: 'right',
             paddingTop: 20,
           }}

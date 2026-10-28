@@ -2,12 +2,9 @@ import { initBackend as initSQLBackend } from 'absurd-sql/dist/indexeddb-main-th
 
 import { logger } from '#platform/server/log';
 
-// After sending a __resume-tab ping we wait for any response from the shared worker.
-// A live shared worker replies well below this threshold; no response means
-// it might have been killed by the OS, and we need to reload.
-const RESUME_TAB_RESPONSE_TIMEOUT_MS = 1_000;
-
 type BridgeMessage = { type?: string; [key: string]: unknown };
+
+const RESTORE_REQUEST_ID = '__restore-budget';
 
 /** The Worker-like surface the connection layer interacts with. */
 export type WorkerLike = {
@@ -33,9 +30,13 @@ export class WorkerBridge {
   _onmessage: ((e: MessageEvent) => void) | null;
   _listeners: Array<{ type: string; handler: (e: MessageEvent) => void }>;
   _started: boolean;
+  _isInitialized: boolean;
   _currentBudgetId: string | null;
-  _sharedWorkerLivenessTimeout: { start: () => void; clear: () => void };
+  _wasHidden: boolean;
   _onVisibilityChange: () => void;
+  // Requests forwarded while a new leader is still restoring its budget;
+  // they would otherwise run against a backend with no database open
+  _heldRequests: unknown[] | null;
   localBackendWorker: Worker | null;
   backendWorkerUrl: URL;
 
@@ -44,21 +45,20 @@ export class WorkerBridge {
     this._onmessage = null;
     this._listeners = [];
     this._started = false;
+    this._isInitialized = false;
     this._currentBudgetId = null;
-    this._sharedWorkerLivenessTimeout =
-      this._createSharedWorkerLivenessTimeout();
+    this._wasHidden = document.visibilityState === 'hidden';
+    this._heldRequests = null;
     this.localBackendWorker = null;
     this.backendWorkerUrl = backendWorkerUrl;
 
     this._onVisibilityChange = () => {
-      if (document.visibilityState === 'hidden' || !this._started) {
-        return;
+      if (document.visibilityState === 'hidden') {
+        this._wasHidden = true;
+      } else if (this._wasHidden) {
+        this._wasHidden = false;
+        this._resumeAssociation();
       }
-
-      // Cancel any pending reload from a prior transition, then re-check shared worker's liveness
-      this._sharedWorkerLivenessTimeout.clear();
-      this._resumeAssociation();
-      this._sharedWorkerLivenessTimeout.start();
     };
 
     // Listen for all messages from the SharedWorker port
@@ -98,6 +98,7 @@ export class WorkerBridge {
   }
 
   _terminateLocalBackendWorker() {
+    this._heldRequests = null;
     if (this.localBackendWorker) {
       this.localBackendWorker.terminate();
       this.localBackendWorker = null;
@@ -112,9 +113,6 @@ export class WorkerBridge {
   }
 
   _onSharedMessage(event: MessageEvent) {
-    // Cancel any pending reload — the shared worker is alive.
-    this._sharedWorkerLivenessTimeout.clear();
-
     const msg = event.data as BridgeMessage;
 
     // Elected as leader: create the real backend Worker on this tab
@@ -129,7 +127,9 @@ export class WorkerBridge {
 
     // Forward requests from SharedWorker to our local Worker
     if (msg && msg.type === '__to-worker') {
-      if (this.localBackendWorker) {
+      if (this._heldRequests) {
+        this._heldRequests.push(msg.msg);
+      } else if (this.localBackendWorker) {
         this.localBackendWorker.postMessage(msg.msg);
       }
       return;
@@ -192,6 +192,10 @@ export class WorkerBridge {
     this._dispatch(event);
   }
 
+  markInitialized() {
+    this._isInitialized = true;
+  }
+
   _normalizeBudgetId(budgetId: string | null): string | null {
     if (
       typeof budgetId === 'string' &&
@@ -212,6 +216,9 @@ export class WorkerBridge {
   }
 
   _resumeAssociation() {
+    if (!this._isInitialized) {
+      return;
+    }
     this._sharedPort.postMessage({
       type: '__resume-tab',
       budgetId: this._currentBudgetId,
@@ -227,6 +234,9 @@ export class WorkerBridge {
     const localWorker = new Worker(this.backendWorkerUrl);
     this.localBackendWorker = localWorker;
     initSQLBackend(localWorker);
+    // Followers keep sending requests during a takeover; hold them until
+    // the restored budget is open (the restore reply releases them)
+    this._heldRequests = budgetToRestore ? [] : null;
 
     const sharedPort = this._sharedPort;
     localWorker.onmessage = workerEvent => {
@@ -250,7 +260,7 @@ export class WorkerBridge {
           const id = budgetToRestore;
           budgetToRestore = null;
           localWorker.postMessage({
-            id: '__restore-budget',
+            id: RESTORE_REQUEST_ID,
             name: 'load-budget',
             args: { id },
             catchErrors: true,
@@ -259,7 +269,7 @@ export class WorkerBridge {
           // currentBudgetId gets updated when the reply arrives.
           sharedPort.postMessage({
             type: '__track-restore',
-            requestId: '__restore-budget',
+            requestId: RESTORE_REQUEST_ID,
             budgetId: id,
           });
         } else if (pendingMsg) {
@@ -268,26 +278,20 @@ export class WorkerBridge {
           localWorker.postMessage(toSend);
         }
       }
+      if (
+        workerMsg.id === RESTORE_REQUEST_ID &&
+        this._heldRequests &&
+        this.localBackendWorker === localWorker
+      ) {
+        const held = this._heldRequests;
+        this._heldRequests = null;
+        for (const request of held) {
+          localWorker.postMessage(request);
+        }
+      }
       sharedPort.postMessage({ type: '__from-worker', msg: workerMsg });
     };
 
     localWorker.postMessage(initMsg);
-  }
-
-  _createSharedWorkerLivenessTimeout() {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    return {
-      start() {
-        timer = setTimeout(() => {
-          window.location.reload();
-        }, RESUME_TAB_RESPONSE_TIMEOUT_MS);
-      },
-      clear() {
-        if (timer !== null) {
-          clearTimeout(timer);
-          timer = null;
-        }
-      },
-    };
   }
 }

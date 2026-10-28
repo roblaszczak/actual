@@ -125,14 +125,13 @@ export const Field = forwardRef<HTMLDivElement, FieldProps>(function Field(
   );
 });
 
-export function UnexposedCellContent({
-  value,
-  formatter,
-  style,
-  ...props
-}: Pick<CellProps, 'value' | 'formatter' | 'style'>) {
+export const UnexposedCellContent = forwardRef<
+  HTMLSpanElement,
+  Pick<CellProps, 'value' | 'formatter' | 'style'>
+>(function UnexposedCellContent({ value, formatter, style, ...props }, ref) {
   return (
     <Text
+      innerRef={ref}
       style={{
         flexGrow: 1,
         whiteSpace: 'nowrap',
@@ -145,7 +144,7 @@ export function UnexposedCellContent({
       {formatter ? formatter(value) : value}
     </Text>
   );
-}
+});
 
 type CellProps = Omit<ComponentProps<typeof View>, 'children' | 'value'> & {
   formatter?: (value: string, type?: unknown) => string | JSX.Element;
@@ -326,7 +325,7 @@ type InputValueProps = Omit<
   'value' | 'onUpdate'
 > & {
   value?: string;
-  onUpdate?: (newValue: string) => void;
+  onUpdate?: (newValue: string, isEdited: boolean) => void;
 } & {
   [key: `data-${string}`]: unknown;
 };
@@ -338,10 +337,12 @@ function InputValue({
   ...props
 }: InputValueProps) {
   const [value, setValue] = useState(defaultValue);
+  const [isEdited, setIsEdited] = useState(false);
   const [prevDefaultValue, setPrevDefaultValue] = useState(defaultValue);
 
   if (prevDefaultValue !== defaultValue) {
     setValue(defaultValue);
+    setIsEdited(false);
     setPrevDefaultValue(defaultValue);
   }
 
@@ -359,7 +360,7 @@ function InputValue({
     }
 
     if (shouldSaveFromKey(e)) {
-      onUpdate?.(value);
+      onUpdate?.(value, isEdited);
     }
   }
 
@@ -367,6 +368,7 @@ function InputValue({
     if (value !== defaultValue) {
       setValue(defaultValue);
     }
+    setIsEdited(false);
   }
 
   const ops = ['+', '-', '*', '/', '^'];
@@ -376,6 +378,7 @@ function InputValue({
   }
 
   function setValue_(text) {
+    setIsEdited(true);
     if (valueIsASingleOperator(text)) {
       setValue(defaultValue + text);
     } else {
@@ -389,7 +392,7 @@ function InputValue({
       value={value}
       onChangeValue={setValue_}
       onBlur={onBlur_}
-      onUpdate={onUpdate}
+      onUpdate={newValue => onUpdate?.(newValue, isEdited)}
       onKeyDown={onKeyDown}
       onEscape={onEscape}
       style={{
@@ -774,8 +777,14 @@ export function SheetCell<
         return (
           <InputValue
             value={formatExpr ? formatExpr(sheetValue) : sheetValue.toString()}
-            onUpdate={value => {
-              onSave(unformatExpr ? unformatExpr(value) : value);
+            onUpdate={(value, isEdited) => {
+              if (!unformatExpr) {
+                onSave(value);
+              } else {
+                // Untouched text can be rounded (hidden decimals); keep the
+                // exact value
+                onSave(isEdited ? unformatExpr(value) : sheetValue);
+              }
             }}
             {...inputProps}
             style={{ textAlign, ...(inputProps?.style || {}) }}
@@ -938,7 +947,7 @@ export type TableProps<T extends TableItem = TableItem> = {
     item: T;
     editing: boolean;
     focusedField: string | null;
-    onEdit: (id: T['id'], field: string) => void;
+    onEdit: TableNavigator<T>['onEdit'];
     index: number;
     position: number;
   }) => ReactNode;
@@ -1048,6 +1057,15 @@ export const Table = forwardRef(
       },
     }));
 
+    function saveScrollDelayed() {
+      saveScrollWidth(
+        scrollContainer.current?.offsetParent
+          ? scrollContainer.current?.offsetParent.clientWidth
+          : 0,
+        scrollContainer.current ? scrollContainer.current.clientWidth : 0,
+      );
+    }
+
     useLayoutEffect(() => {
       // We wait for the list to mount because AutoSizer needs to run
       // before it's mounted
@@ -1058,18 +1076,12 @@ export const Table = forwardRef(
       }
 
       if (scrollContainer.current && saveScrollWidth) {
-        setTimeout(saveScrollDelayed, 200);
+        const timeout = setTimeout(saveScrollDelayed, 200);
+        // Without this, the timer can fire after unmount and call setState
+        // on a dead component (crashes test teardown)
+        return () => clearTimeout(timeout);
       }
     });
-
-    function saveScrollDelayed() {
-      saveScrollWidth(
-        scrollContainer.current?.offsetParent
-          ? scrollContainer.current?.offsetParent.clientWidth
-          : 0,
-        scrollContainer.current ? scrollContainer.current.clientWidth : 0,
-      );
-    }
 
     function renderRow({ index, style, key }) {
       const item = items[index];

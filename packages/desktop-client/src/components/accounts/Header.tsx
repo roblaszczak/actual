@@ -44,6 +44,7 @@ import type { SavedFilter } from '#components/filters/SavedFilterMenuButton';
 import { NotesButton } from '#components/NotesButton';
 import { SelectedTransactionsButton } from '#components/transactions/SelectedTransactionsButton';
 import { useDateFormat } from '#hooks/useDateFormat';
+import { useFeatureFlag } from '#hooks/useFeatureFlag';
 import { useLocale } from '#hooks/useLocale';
 import { useLocalPref } from '#hooks/useLocalPref';
 import { useSplitsExpanded } from '#hooks/useSplitsExpanded';
@@ -67,14 +68,11 @@ type AccountHeaderProps = {
   accountsSyncing: string[];
   accounts: AccountEntity[];
   transactions: TransactionEntity[];
-  showBalances: boolean;
   showExtraBalances: boolean;
-  showCleared: boolean;
   showReconciled: boolean;
   showEmptyMessage: boolean;
   balanceQuery: ComponentProps<typeof ReconcilingMessage>['balanceQuery'];
   reconcileAmount?: number | null;
-  canCalculateBalance?: () => boolean;
   isFiltered: boolean;
   filteredAmount?: number | null;
   isSorted: boolean;
@@ -142,14 +140,11 @@ export function AccountHeader({
   accountsSyncing,
   accounts,
   transactions,
-  showBalances,
   showExtraBalances,
-  showCleared,
   showReconciled,
   showEmptyMessage,
   balanceQuery,
   reconcileAmount,
-  canCalculateBalance,
   isFiltered,
   filteredAmount,
   isSorted,
@@ -509,12 +504,7 @@ export function AccountHeader({
                       account={account}
                       canSync={canSync}
                       showNetWorthChart={showNetWorthChart}
-                      canShowBalances={
-                        canCalculateBalance ? canCalculateBalance() : false
-                      }
                       isSorted={isSorted}
-                      showBalances={showBalances}
-                      showCleared={showCleared}
                       showReconciled={showReconciled}
                       onMenuSelect={onMenuSelect}
                     />
@@ -553,6 +543,16 @@ export function AccountHeader({
                           text: showNetWorthChart
                             ? t('Hide balance chart')
                             : t('Show balance chart'),
+                        },
+                        {
+                          name: 'toggle-reconciled',
+                          text: showReconciled
+                            ? t('Hide reconciled transactions')
+                            : t('Show reconciled transactions'),
+                        },
+                        {
+                          name: 'manage-columns',
+                          text: t('Manage table columns'),
                         },
                       ]}
                     />
@@ -727,9 +727,6 @@ type AccountMenuProps = {
   account: AccountEntity;
   canSync: boolean;
   showNetWorthChart: boolean;
-  showBalances: boolean;
-  canShowBalances: boolean;
-  showCleared: boolean;
   showReconciled: boolean;
   isSorted: boolean;
   onMenuSelect: (
@@ -739,11 +736,11 @@ type AccountMenuProps = {
       | 'close'
       | 'reopen'
       | 'export'
-      | 'toggle-balance'
       | 'remove-sorting'
-      | 'toggle-cleared'
       | 'toggle-reconciled'
-      | 'toggle-net-worth-chart',
+      | 'toggle-net-worth-chart'
+      | 'manage-columns'
+      | 'account-group',
   ) => void;
 };
 
@@ -751,15 +748,13 @@ function AccountMenu({
   account,
   canSync,
   showNetWorthChart,
-  showBalances,
-  canShowBalances,
-  showCleared,
   showReconciled,
   isSorted,
   onMenuSelect,
 }: AccountMenuProps) {
   const { t } = useTranslation();
   const syncServerStatus = useSyncServerStatus();
+  const newSidebarUIEnabled = useFeatureFlag('newSidebarUI');
 
   return (
     <Menu
@@ -776,16 +771,6 @@ function AccountMenu({
               } as const,
             ]
           : []),
-        ...(canShowBalances
-          ? [
-              {
-                name: 'toggle-balance',
-                text: showBalances
-                  ? t('Hide running balance')
-                  : t('Show running balance'),
-              } as const,
-            ]
-          : []),
         {
           name: 'toggle-net-worth-chart',
           text: showNetWorthChart
@@ -793,11 +778,17 @@ function AccountMenu({
             : t('Show balance chart'),
         },
         {
-          name: 'toggle-cleared',
-          text: showCleared
-            ? t('Hide "cleared" checkboxes')
-            : t('Show "cleared" checkboxes'),
+          name: 'manage-columns',
+          text: t('Manage table columns'),
         },
+        ...(newSidebarUIEnabled
+          ? [
+              {
+                name: 'account-group',
+                text: t('Set account group'),
+              } as const,
+            ]
+          : []),
         {
           name: 'toggle-reconciled',
           text: showReconciled

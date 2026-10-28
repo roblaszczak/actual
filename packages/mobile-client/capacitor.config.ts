@@ -3,22 +3,9 @@ import type { CapacitorConfig } from '@capacitor/cli';
 const baseConfig: CapacitorConfig = {
   appId: 'org.actualbudget',
   appName: 'Actual Budget',
-  webDir: '../desktop-client/build',
-  plugins: {
-    CapacitorUpdater: {
-      autoUpdate: true,
-      directUpdate: 'always',
-      autoSplashscreen: true,
-      keepUrlPathAfterReload: true,
-      allowModifyUrl: true,
-      persistCustomId: true,
-      publicKey: '',
-      statsUrl: '',
-    },
-    SplashScreen: {
-      launchAutoHide: false,
-    },
-  },
+  // Staged from the web build by `bin/stage-www.mjs` (run by the sync
+  // scripts), which leaves out files the native apps do not need.
+  webDir: 'www',
 };
 
 const devConfig: CapacitorConfig = {

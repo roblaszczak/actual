@@ -17,6 +17,7 @@ import {
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
+  YAxis,
 } from 'recharts';
 
 import { PrivacyFilter } from '#components/PrivacyFilter';
@@ -26,7 +27,7 @@ import { LoadingIndicator } from '#components/reports/LoadingIndicator';
 import { ReportCard } from '#components/reports/ReportCard';
 import { ReportCardName } from '#components/reports/ReportCardName';
 import { calculateTimeRange } from '#components/reports/reportRanges';
-import { useBalanceForecast } from '#hooks/useBalanceForecast';
+import { useBalanceForecastSeries } from '#hooks/useBalanceForecast';
 import { useFormat } from '#hooks/useFormat';
 import { useSyncedPref } from '#hooks/useSyncedPref';
 
@@ -36,6 +37,10 @@ import {
   getLowestChartDataPoint,
   getZeroCrossingGradientOffset,
 } from './balanceForecastChartData';
+import { buildForecastSeriesChart } from './balanceForecastSeries';
+import { getForecastSeriesStyle } from './ForecastSeriesKey';
+import { ForecastSeriesSummary } from './ForecastSeriesSummary';
+import { ForecastSeriesTooltip } from './ForecastSeriesTooltip';
 
 type BalanceForecastCardProps = {
   widgetId: string;
@@ -61,6 +66,9 @@ export function BalanceForecastCard({
       ? 'tracking-budget'
       : 'schedules';
   const isTrackingBudgetForecast = source === 'tracking-budget';
+  const granularity = meta?.granularity || 'Monthly';
+  const series =
+    !isTrackingBudgetForecast && meta?.series?.length ? meta.series : undefined;
 
   const [nameMenuOpen, setNameMenuOpen] = useState(false);
   const [isCardHovered, setIsCardHovered] = useState(false);
@@ -78,16 +86,20 @@ export function BalanceForecastCard({
     [accounts, meta?.accounts],
   );
 
-  const startDate = start + '-01';
+  // `start` may be `yyyy-MM` or `yyyy-MM-dd`; `firstDayOfMonth` handles both.
+  const startDate = monthUtils.firstDayOfMonth(start);
   const endDate = monthUtils.lastDayOfMonth(end);
 
+  const yAxisBase = meta?.yAxisBase ?? 'Auto';
+
   const {
-    data: forecastData,
+    data: forecasts,
     error,
     isFetching,
     isPlaceholderData,
     isPending: isLoading,
-  } = useBalanceForecast({
+  } = useBalanceForecastSeries({
+    series,
     accountIds: isTrackingBudgetForecast ? undefined : selectedAccountIds,
     conditions: isTrackingBudgetForecast ? undefined : meta?.conditions,
     conditionsOp: isTrackingBudgetForecast ? undefined : meta?.conditionsOp,
@@ -98,6 +110,7 @@ export function BalanceForecastCard({
       : meta?.accounts === undefined,
     source,
   });
+  const forecastData = forecasts?.[0]?.forecast;
   const errorMessage =
     error instanceof Error
       ? error.message
@@ -123,23 +136,37 @@ export function BalanceForecastCard({
     forecastData: normalizedForecastData,
     start: chartRange.start,
     end: chartRange.end,
-    granularity: 'Monthly',
+    granularity,
   });
+  const comparison = buildForecastSeriesChart({
+    forecasts,
+    series: series?.map((line, index) => ({
+      ...line,
+      name: line.name.trim() || t('Line {{number}}', { number: index + 1 }),
+    })),
+    start: chartRange.start,
+    end: chartRange.end,
+    granularity,
+  });
+  const visibleChartData = series ? comparison.chartData : chartData;
   const endingPoint = chartData.at(-1);
   const lowestPoint = getLowestChartDataPoint(chartData);
   const hasNegativeEndingBalance = endingPoint && endingPoint.balance < 0;
-  const hasNegativeBalance = chartData.some(d => d.balance < 0);
+  const hasNegativeBalance = comparison.balances.some(balance => balance < 0);
   const zeroCrossingGradientOffset = getZeroCrossingGradientOffset(chartData);
   const gradientId = `balance-forecast-card-line-gradient-${widgetId}`;
   const isUpdatingForecast = isFetching && isPlaceholderData;
   const todayReferenceDate = monthUtils.currentMonth();
-  const showsTodayReferenceLine = chartData.some(
+  const showsTodayReferenceLine = visibleChartData.some(
     dataPoint => dataPoint.date === todayReferenceDate,
   );
 
-  const scheduledOccurrenceCount = countForecastScheduledOccurrences(
-    normalizedForecastData,
-  );
+  const scheduledOccurrenceCount = countForecastScheduledOccurrences({
+    forecastData: normalizedForecastData,
+    start: chartRange.start,
+    end: chartRange.end,
+    granularity,
+  });
   const hasFilters =
     !isTrackingBudgetForecast && (meta?.conditions?.length ?? 0) > 0;
 
@@ -156,7 +183,9 @@ export function BalanceForecastCard({
         onPointerEnter={onCardHover}
         onPointerLeave={onCardHoverEnd}
       >
-        <View style={{ flexDirection: 'row', padding: 20 }}>
+        <View
+          style={{ flexDirection: 'row', padding: series ? '12px 20px' : 20 }}
+        >
           <View style={{ flex: 1 }}>
             <ReportCardName
               name={meta?.name || t('Balance Forecast')}
@@ -172,7 +201,7 @@ export function BalanceForecastCard({
             />
             <DateRange start={start} end={end} />
           </View>
-          {endingPoint && (
+          {!series && endingPoint && (
             <View style={{ textAlign: 'right' }}>
               <Block
                 style={{
@@ -212,6 +241,16 @@ export function BalanceForecastCard({
           )}
         </View>
 
+        {series && !errorMessage && (
+          <View style={{ padding: '0 20px', minHeight: 0, flexShrink: 1 }}>
+            <ForecastSeriesSummary
+              lines={comparison.lines}
+              compact
+              isHovered={isCardHovered}
+            />
+          </View>
+        )}
+
         {isLoading && !normalizedForecastData ? (
           <LoadingIndicator />
         ) : errorMessage ? (
@@ -226,17 +265,28 @@ export function BalanceForecastCard({
               {errorMessage}
             </Block>
           </View>
-        ) : forecastData && forecastData.dataPoints.length > 0 ? (
+        ) : visibleChartData.length > 0 ? (
           <>
-            <Container style={{ height: 'auto', flex: 1 }}>
+            <Container
+              style={{
+                height: 'auto',
+                flex: 1,
+                minHeight: series ? 60 : undefined,
+              }}
+            >
               {(width, height) => (
                 <ResponsiveContainer>
                   <LineChart
                     width={width}
                     height={height}
-                    data={chartData}
+                    data={visibleChartData}
                     margin={{ top: 5, right: 5, left: 5, bottom: 5 }}
                   >
+                    <YAxis
+                      hide // do not show the axis labels (balance)
+                      domain={[yAxisBase === 'Zero-Based' ? 0 : 'auto', 'auto']}
+                      allowDataOverflow={false} // false by default but explicit > implicit
+                    />
                     <defs>
                       <linearGradient
                         id={gradientId}
@@ -272,6 +322,14 @@ export function BalanceForecastCard({
                       isAnimationActive={false}
                       content={({ active, payload }) => {
                         if (active && payload && payload.length) {
+                          if (series) {
+                            return (
+                              <ForecastSeriesTooltip
+                                date={payload[0].payload.date}
+                                lines={comparison.lines}
+                              />
+                            );
+                          }
                           return (
                             <div
                               style={{
@@ -309,61 +367,80 @@ export function BalanceForecastCard({
                     {hasNegativeBalance && (
                       <ReferenceLine y={0} stroke={theme.pageTextSubdued} />
                     )}
-                    <Line
-                      type="monotone"
-                      dataKey="balance"
-                      stroke={`url(#${gradientId})`}
-                      strokeWidth={2}
-                      dot={false}
-                      activeDot={{ r: 4 }}
-                      opacity={isUpdatingForecast ? 0.45 : 1}
-                    />
+                    {series ? (
+                      comparison.lines.map((line, index) => (
+                        <Line
+                          key={line.id}
+                          name={line.name}
+                          dataKey={line.dataKey}
+                          type="monotone"
+                          {...getForecastSeriesStyle(index)}
+                          strokeWidth={2}
+                          dot={false}
+                          activeDot={{ r: 4 }}
+                          isAnimationActive={false}
+                          opacity={isUpdatingForecast ? 0.45 : 1}
+                        />
+                      ))
+                    ) : (
+                      <Line
+                        type="monotone"
+                        dataKey="balance"
+                        stroke={`url(#${gradientId})`}
+                        strokeWidth={2}
+                        dot={false}
+                        activeDot={{ r: 4 }}
+                        opacity={isUpdatingForecast ? 0.45 : 1}
+                      />
+                    )}
                   </LineChart>
                 </ResponsiveContainer>
               )}
             </Container>
-            <Block
-              style={{
-                padding: '0 20px 16px',
-                fontSize: 12,
-                color: theme.pageTextLight,
-              }}
-            >
-              {isTrackingBudgetForecast ? (
-                <Trans>
-                  Forecast = starting balance + budgeted income - budgeted
-                  expenses
-                </Trans>
-              ) : scheduledOccurrenceCount === 0 ? (
-                hasFilters ? (
+            {!series && (
+              <Block
+                style={{
+                  padding: '0 20px 16px',
+                  fontSize: 12,
+                  color: theme.pageTextLight,
+                }}
+              >
+                {isTrackingBudgetForecast ? (
                   <Trans>
-                    Filtered running total only; no scheduled occurrences in
-                    this range
+                    Forecast = starting balance + budgeted income - budgeted
+                    expenses
                   </Trans>
+                ) : scheduledOccurrenceCount === 0 ? (
+                  hasFilters ? (
+                    <Trans>
+                      Filtered running total only; no scheduled occurrences in
+                      this range
+                    </Trans>
+                  ) : (
+                    <Trans>No scheduled transactions in this range</Trans>
+                  )
                 ) : (
-                  <Trans>No scheduled transactions in this range</Trans>
-                )
-              ) : (
-                <>
-                  <Trans count={scheduledOccurrenceCount}>
-                    {{ count: scheduledOccurrenceCount }} scheduled transactions
-                    included
-                  </Trans>
-                  {hasFilters ? (
-                    <>
-                      {' '}
-                      <Trans>(filtered running total)</Trans>
-                    </>
-                  ) : null}
-                </>
-              )}
-              {isUpdatingForecast ? (
-                <>
-                  {' '}
-                  <Trans>Updating...</Trans>
-                </>
-              ) : null}
-            </Block>
+                  <>
+                    <Trans count={scheduledOccurrenceCount}>
+                      {{ count: scheduledOccurrenceCount }} scheduled
+                      transactions included
+                    </Trans>
+                    {hasFilters ? (
+                      <>
+                        {' '}
+                        <Trans>(filtered running total)</Trans>
+                      </>
+                    ) : null}
+                  </>
+                )}
+                {isUpdatingForecast ? (
+                  <>
+                    {' '}
+                    <Trans>Updating...</Trans>
+                  </>
+                ) : null}
+              </Block>
+            )}
           </>
         ) : (
           <View style={{ height: 120, padding: 20 }}>
