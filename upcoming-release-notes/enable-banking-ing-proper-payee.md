@@ -1,6 +1,6 @@
 ---
-category: Bugfixes
+category: Bugfix
 authors: [roblaszczak]
 ---
 
-[AI] Enable Banking bugfix: proper payee for ING Bank
+Fix Enable Banking showing the transaction description instead of the real payee for ING Bank transactions.
