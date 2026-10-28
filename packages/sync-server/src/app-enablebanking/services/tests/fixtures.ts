@@ -109,6 +109,7 @@ export const mockTransactionCreditorPostalAddress = {
   entry_reference: 'ref-005',
   transaction_amount: { currency: 'EUR', amount: '30.00' },
   creditor: {
+    name: null,
     postal_address: { address_line: ['ACME STORE WARSAW'] },
   },
   debtor: { postal_address: { address_line: ['ACCOUNT HOLDER'] } },
@@ -123,6 +124,7 @@ export const mockTransactionDebtorPostalAddress = {
   transaction_amount: { currency: 'EUR', amount: '100.00' },
   creditor: { postal_address: { address_line: ['ACCOUNT HOLDER'] } },
   debtor: {
+    name: null,
     postal_address: { address_line: ['SOME CLIENT LTD'] },
   },
   credit_debit_indicator: 'CRDT',

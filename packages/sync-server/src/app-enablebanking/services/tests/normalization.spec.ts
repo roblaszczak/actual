@@ -170,6 +170,50 @@ describe('normalizeTransaction', () => {
     expect(result.payeeName).not.toBe(result.notes);
   });
 
+  it('should use only the first postal_address line when the address has several lines', () => {
+    const result = normalizeTransaction({
+      ...mockTransactionCreditorPostalAddress,
+      creditor: {
+        name: null,
+        postal_address: {
+          address_line: [
+            'ACME STORE',
+            'UL. MARSZALKOWSKA 1',
+            '00-001 WARSZAWA',
+          ],
+        },
+      },
+    });
+
+    expect(result.payeeName).toBe('ACME STORE');
+  });
+
+  it('should skip empty and whitespace-only postal_address lines and trim the payee', () => {
+    const result = normalizeTransaction({
+      ...mockTransactionCreditorPostalAddress,
+      creditor: {
+        name: null,
+        postal_address: {
+          address_line: ['', '  ', ' ACME STORE ', 'UL. MARSZALKOWSKA 1'],
+        },
+      },
+    });
+
+    expect(result.payeeName).toBe('ACME STORE');
+  });
+
+  it('should prefer creditor name over postal_address when both are present', () => {
+    const result = normalizeTransaction({
+      ...mockTransactionCreditorPostalAddress,
+      creditor: {
+        name: 'Acme Store Sp. z o.o.',
+        postal_address: { address_line: ['ACME STORE WARSAW'] },
+      },
+    });
+
+    expect(result.payeeName).toBe('Acme Store Sp. z o.o.');
+  });
+
   it('should join remittance_information with space', () => {
     const result = normalizeTransaction(mockCreditTransaction);
     expect(result.remittanceInformationUnstructured).toBe(

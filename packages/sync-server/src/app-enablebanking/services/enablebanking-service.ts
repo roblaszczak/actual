@@ -216,16 +216,14 @@ function cleanRemittanceArray(arr: string[]): string[] {
 // Some ASPSPs (e.g. ING on current accounts) leave creditor/debtor `name` empty
 // and put the counterparty in postal_address.address_line instead. Fall back to
 // that so the payee is the real merchant/party rather than the remittance text
-// (which would otherwise be duplicated into both payee and notes).
+// (which would otherwise be duplicated into both payee and notes). Only the
+// first non-empty line is used: other banks return a full postal address there.
 // See https://github.com/actualbudget/actual/issues/7799#issuecomment-4732007929
-function partyName(
-  party?: EnableBankingTransaction['creditor'],
-): string | undefined {
-  if (party?.name) {
-    return party.name;
-  }
-  const lines = party?.postal_address?.address_line?.filter(Boolean);
-  return lines && lines.length > 0 ? lines.join(' ').trim() : undefined;
+function partyName(party?: EnableBankingParty | null): string | undefined {
+  return (
+    party?.name ||
+    party?.postal_address?.address_line?.find(line => line.trim())?.trim()
+  );
 }
 
 export function normalizeTransaction(
